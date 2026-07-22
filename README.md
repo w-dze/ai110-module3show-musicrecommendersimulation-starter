@@ -211,19 +211,115 @@ Use this section to document the experiments you ran. For example:
 - What happened when you added tempo or valence to the score
 - How did your system behave for different types of users
 
+### Reweighting: double energy, halve genre
+
+I changed the scoring weights in `score_song` — genre from `2.0` to `1.0`
+(halved) and the energy multiplier from `1.0` to `2.0` (doubled) — then re-ran
+`main.py` to see whether recommendations got more accurate or just different.
+
+**What happened:** the #1 pick stayed the same for all three real profiles
+(Sunrise City, Library Rain, Storm Runner), because each of those songs wins on
+genre *and* mood *and* energy at once, so reweighting can't dislodge them. The
+change instead reshuffled ranks 2–5, consistently pulling energy-similar but
+genre-mismatched songs upward:
+
+| Profile | Notable shift | Read |
+|---|---|---|
+| High-Energy Pop | Storm Runner (rock) & Warehouse Pulse (edm) entered top 5 | Neither is pop or happy — surfaced purely for energy ≈ 0.90 |
+| Chill Lofi | Spacewalk Thoughts (**ambient**) rose to #3, above Focus Flow (**actual lofi**) | A genre match got demoted below a non-lofi track |
+| Deep Intense Rock | #3–5 became hip hop / edm / pop (all non-rock) | Energy proximity now outranks genre relevance |
+
+**More accurate, or just different?** Just different — arguably slightly *less*
+faithful to these profiles. Because each profile is named by genre ("...Pop",
+"...Lofi", "...Rock"), boosting energy and cutting genre makes the lists drift
+away from the stated genre identity. It's a legitimate design choice — the system
+now favors "songs that feel the right intensity" over "songs of your genre" — but
+it's a taste trade-off, not a measurable accuracy gain (there's no ground truth to
+score against). What's clear is that energy match now beats genre match.
+
+**Side effect:** the Out-of-Range Energy edge case got *worse*. Doubling the energy
+multiplier doubled the penalty, so its scores fell from about `-2.3` down to
+`-5.52` — reinforcing that the energy term needs clamping to `[0, 1]`.
+
+### Adversarial / edge-case profiles
+
+I added two "trick" user profiles to `USER_PROFILES` to test whether the scoring
+logic could be fooled or produce unexpected results.
+
+**1. Conflicting Sad High-Energy** — `genre: pop, mood: "sad", energy: 0.9, likes_acoustic: False`
+
+The idea was to give conflicting preferences (a "sad" mood but very high energy).
+Result:
+
+```
+============================================
+  CONFLICTING SAD HIGH-ENERGY
+============================================
+
+1. Gym Hero — Max Pulse            Score: 3.92
+   • matches your favorite genre (pop)
+   • energy 0.93 vs target 0.90
+   • produced sound (acousticness 0.05)
+
+2. Sunrise City — Neon Echo        Score: 3.74
+   • matches your favorite genre (pop)
+   • energy 0.82 vs target 0.90
+   • produced sound (acousticness 0.18)
+
+3. Warehouse Pulse — Bassline Foundry   Score: 1.92
+4. Iron Verdict — Ashen Crown           Score: 1.91
+5. Storm Runner — Voltline              Score: 1.89
+```
+
+**What I found:** `"sad"` is not one of the mood values in the dataset, so the mood
+term silently scored 0 for *every* song — no error, no warning. The recommender
+just ignored the mood entirely and served high-energy pop. The "conflict" was
+invisible. This shows the scorer does no validation of preference values: a typo
+or an unknown mood/genre fails silently instead of being flagged.
+
+**2. Out-of-Range Energy** — `genre: rock, mood: intense, energy: 5.0, likes_acoustic: False`
+
+The idea was to pass an energy target outside the valid `0–1` range. Result:
+
+```
+============================================
+  OUT-OF-RANGE ENERGY
+============================================
+
+1. Storm Runner — Voltline         Score:  1.31
+2. Gym Hero — Max Pulse             Score: -0.62
+3. Iron Verdict — Ashen Crown       Score: -2.05
+4. Warehouse Pulse — Bassline Foundry   Score: -2.08
+5. Concrete Kings — Rhyme Theory        Score: -2.32
+```
+
+**What I found:** `score_song` never clamps the target energy, so
+`1 - abs(song.energy - 5.0)` goes strongly negative and drags total scores below
+zero (down to -2.32). Ranking still "works" relative to itself, but the scores are
+now meaningless/negative and a genre+mood match (Storm Runner, +3.5) is the only
+thing keeping the top song positive. This shows the energy term is unbounded and
+should be clamped to `[0, 1]`.
+
+**Takeaway:** both experiments point to the same fix — validate/clamp user inputs
+(known genre & mood values, energy in `[0, 1]`) so bad or contradictory profiles
+fail loudly instead of producing silent or nonsensical scores.
+
 ---
 
 ## Limitations and Risks
 
-Summarize some limitations of your recommender.
+- **Tiny, uneven catalog** — only 18 songs, and genres are unbalanced (lofi 3,
+  pop 2, most genres just 1), so niche tastes get very few possible matches.
+- **No understanding of content** — it never reads lyrics, language, artist, or
+  release year; a song is forced into exactly one genre and one mood.
+- **Filter bubble** — exact-match genre/mood plus greedy top-K just echoes a
+  user's taste back with no discovery of adjacent or unfamiliar music.
+- **Hidden bias** — acousticness is tied to genre, so a "produced-sound" or
+  high-energy preference quietly favors pop/electronic and buries acoustic genres.
+- **Silent failures** — unknown genres/moods score 0 and out-of-range energy goes
+  negative, both without any warning.
 
-Examples:
-
-- It only works on a tiny catalog
-- It does not understand lyrics or language
-- It might over favor one genre or mood
-
-You will go deeper on this in your model card.
+I go deeper on these in the [model card](model_card.md#6-limitations-and-bias).
 
 ---
 
@@ -233,10 +329,37 @@ Read and complete `model_card.md`:
 
 [**Model Card**](model_card.md)
 
-Write 1 to 2 paragraphs here about what you learned:
+**What was my biggest learning moment during this project?**
+The reweighting experiment. When I doubled the energy weight and halved genre, I
+expected the recommendations to get "better," but the #1 picks barely moved while
+the middle of every list quietly shifted toward high-energy songs. That was the
+moment it clicked that a recommender isn't magic — it's just a scoring formula plus
+a sort, and the weights I pick silently decide what a listener sees.
 
-- about how recommenders turn data into predictions
-- about where bias or unfairness could show up in systems like this
+**How did using AI tools help me, and when did I need to double-check them?**
+AI tools helped me move fast — designing adversarial user profiles, running the
+simulation, and drafting the model card and bias analysis. But the claims still had
+to be checked against the real data: that acousticness is tied to genre was
+confirmed against the CSV (classical/folk near 0.9, metal/edm near 0.05), and that
+`"sad"` scored 0 because it isn't one of the dataset's actual moods. The AI also
+flagged that my data-flow diagram still listed the *old* weights after I'd changed
+them — a reminder that AI output can drift out of sync with the real code, so it's
+worth verifying against the source instead of just trusting the explanation.
+
+**What surprised me about how simple algorithms can still "feel" like recommendations?**
+Just four rules — genre, mood, energy, sound — added into one number produced lists
+that genuinely felt personalized, complete with a "why" for each pick. There's no
+machine learning and no understanding of the music at all, yet a clear, consistent
+profile got results that matched my intuition. It surprised me how much of the
+"smart" feeling comes from the *explanations* and the sorting, not from any real
+intelligence.
+
+**What would I try next if I extended this project?**
+I'd bring a real user into the loop instead of hand-tuning the weights myself.
+Right now I'm guessing what "better" means; instead I'd let a user rate or
+thumbs-up/down the recommendations and use that feedback to adjust the scoring — so
+the system improves from what people actually like rather than from my assumptions.
+I'd also add a diversity term so that feedback doesn't just deepen a filter bubble.
 
 
 

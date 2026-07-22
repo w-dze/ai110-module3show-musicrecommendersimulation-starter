@@ -81,7 +81,7 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
 
     # Genre match — strongest signal of taste
     if song["genre"] == user_prefs["genre"]:
-        score += 2.0
+        score += 1.0
         reasons.append(f"matches your favorite genre ({song['genre']})")
 
     # Mood match
@@ -90,7 +90,7 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
         reasons.append(f"matches your mood ({song['mood']})")
 
     # Energy proximity — closer to target energy is worth more
-    energy_points = 1.0 * (1 - abs(song["energy"] - user_prefs["energy"]))
+    energy_points = 2.0 * (1 - abs(song["energy"] - user_prefs["energy"]))
     score += energy_points
     reasons.append(f"energy {song['energy']:.2f} vs target {user_prefs['energy']:.2f}")
 
